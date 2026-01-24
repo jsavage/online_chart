@@ -24,7 +24,7 @@ $p->setDefaultPage("harbour");
 <!DOCTYPE HTML>
 <html>
     <head>
-        <title>OSW -<?=$t->tr('nautical_chart')?>: <?=$t->tr("Legende")?> - <?=$p->getCurrentPageName()?></title>
+        <title>OSW -<?=$t->tr('SeaChart')?>: <?=$t->tr("Legende")?> - <?=$p->getCurrentPageName()?></title>
         <meta name="AUTHOR" content="Olaf Hannemann">
         <meta http-equiv="content-type" content="text/html; charset=utf-8">
         <meta http-equiv="content-language" content="<?= $t->getCurrentLanguage()?>">
