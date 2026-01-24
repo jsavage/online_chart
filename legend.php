@@ -25,10 +25,8 @@ $p->setDefaultPage("harbour");
 <html>
     <head>
         <title>OSW -<?=$t->tr('SeaChart')?>: <?=$t->tr("Legende")?> - <?=$p->getCurrentPageName()?></title>
-        <meta name="AUTHOR" content="Olaf Hannemann">
         <meta http-equiv="content-type" content="text/html; charset=utf-8">
         <meta http-equiv="content-language" content="<?= $t->getCurrentLanguage()?>">
-        <meta name="date" content="2012-06-02">
         <link rel="SHORTCUT ICON" href="../resources/icons/logo.png">
         <link rel="stylesheet" type="text/css" href="legend.css">
     </head>
