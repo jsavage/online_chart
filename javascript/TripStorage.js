@@ -1,18 +1,22 @@
 /******************************************************************************
  * Trip Storage Module for OpenSeaMap Trip Planner
- * Provides localStorage functionality to save and load trips
+ * 
+ * This module provides browser storage functionality to save and load trips
+ * using the browser's localStorage API.
  * 
  * Features:
- * - Save trips to browser localStorage
+ * - Save trips with timestamps
  * - Load trips from storage
  * - Delete individual trips
- * - List all saved trips with timestamps
- * - UI dialogs for managing trips
+ * - Manage multiple saved trips
+ * - XSS protection through HTML escaping
  ******************************************************************************/
 
+const TRIP_STORAGE_KEY = "openseamap_trips";
+
 /**
- * Saves the current trip to browser localStorage
- * @param {string} tripName - Name of the trip to save
+ * Save the current route to browser storage
+ * @param {string} tripName - The name to give this trip
  */
 function TripStorage_saveTrip(tripName) {
   // Validate input
@@ -24,214 +28,150 @@ function TripStorage_saveTrip(tripName) {
   tripName = tripName.trim();
 
   // Check if route exists
-  if (!routeObject || !routeTrack || routeTrack.length === 0) {
+  if (!routeObject || !routeObject.getGeometry()) {
     alert("No route to save. Please draw a route first.");
     return;
   }
 
-  // Check localStorage support
-  if (!window.localStorage) {
-    alert("Your browser does not support localStorage.");
-    return;
-  }
+  // Get all existing trips
+  const trips = TripStorage_getAllTrips();
 
-  // Check if trip already exists
-  const existingTrip = TripStorage_getTrip(tripName);
-  if (existingTrip && !confirm(`Trip "${tripName}" already exists. Overwrite it?`)) {
-    return;
-  }
-
-  // Serialize the trip data
-  const tripData = {
-    name: tripName,
-    coordinates: routeTrack,
-    timestamp: new Date().toISOString(),
-    distance: document.getElementById("routeDistance").innerHTML,
-  };
-
-  try {
-    const allTrips = TripStorage_getAllTrips();
-    allTrips[tripName] = tripData;
-    localStorage.setItem("trips", JSON.stringify(allTrips));
-    alert(`Trip "${tripName}" saved successfully!`);
-  } catch (e) {
-    if (e.name === "QuotaExceededError") {
-      alert("Storage quota exceeded. Please delete some trips.");
-    } else {
-      alert("Error saving trip: " + e.message);
+  // Check if trip name already exists
+  if (trips.some((trip) => trip.name === tripName)) {
+    if (!confirm(`A trip named "${tripName}" already exists. Overwrite it?`)) {
+      return;
     }
   }
+
+  // Serialize the route
+  const tripData = {
+    name: tripName,
+    timestamp: new Date().toISOString(),
+    coordinates: routeTrack,
+    featureData: {
+      type: routeObject.getGeometry().getType(),
+      coordinates: routeObject
+        .getGeometry()
+        .getCoordinates()
+        .map(([x, y]) => ({ x, y })),
+    },
+  };
+
+  // Remove old trip with same name if exists
+  const filteredTrips = trips.filter((trip) => trip.name !== tripName);
+  filteredTrips.push(tripData);
+
+  // Save to localStorage
+  try {
+    localStorage.setItem(TRIP_STORAGE_KEY, JSON.stringify(filteredTrips));
+    alert(`Trip "${tripName}" saved successfully!`);
+  } catch (error) {
+    console.error("Error saving trip to localStorage:", error);
+    alert("Error saving trip. Storage may be full.");
+  }
 }
 
 /**
- * Retrieves a specific trip from storage
- * @param {string} tripName - Name of the trip to retrieve
- * @returns {object|null} Trip data or null if not found
- */
-function TripStorage_getTrip(tripName) {
-  const allTrips = TripStorage_getAllTrips();
-  return allTrips[tripName] || null;
-}
-
-/**
- * Loads a trip from storage onto the map
- * @param {string} tripName - Name of the trip to load
+ * Load a trip from storage onto the map
+ * @param {string} tripName - The name of the trip to load
  */
 function TripStorage_loadTrip(tripName) {
-  const trip = TripStorage_getTrip(tripName);
+  const trips = TripStorage_getAllTrips();
+  const trip = trips.find((t) => t.name === tripName);
 
   if (!trip) {
-    alert(`Trip "${tripName}" not found.`);
+    alert("Trip not found.");
     return;
   }
 
-  if (!routeObject) {
-    alert("Trip Planner is not initialized.");
-    return;
-  }
+  // Clear current route
+  layer_nautical_route.getSource().clear();
 
-  try {
-    // Convert stored coordinates back to feature
-    const coordinates = trip.coordinates.map((point) => [point.x, point.y]);
+  // Recreate the feature from stored data
+  const coordinates = trip.featureData.coordinates.map((coord) => [coord.x, coord.y]);
+  const geometry = new ol.geom.LineString(coordinates);
+  const feature = new ol.Feature(geometry);
 
-    // Create new linestring feature
-    const lineString = new ol.geom.LineString(coordinates);
-    const feature = new ol.Feature({
-      geometry: lineString,
-    });
+  // Add feature to layer
+  layer_nautical_route.getSource().addFeature(feature);
 
-    // Clear existing route
-    layer_nautical_route.getSource().clear();
+  // Update route tracking variables
+  routeObject = feature;
+  routeTrack = trip.coordinates;
+  routeChanged = false;
 
-    // Add loaded route to layer
-    layer_nautical_route.getSource().addFeature(feature);
+  // Update the UI
+  NauticalRoute_getPoints(routeTrack);
+  document.getElementById("tripName").value = tripName;
+  document.getElementById("buttonRouteDownloadTrack").disabled = false;
 
-    // Update the route object and track
-    routeObject = feature;
-    routeTrack = trip.coordinates;
-
-    // Update the UI with the trip name and details
-    document.getElementById("tripName").value = tripName;
-    NauticalRoute_getPoints(routeTrack);
-
-    // Mark as not changed since we just loaded
-    routeChanged = false;
-
-    alert(`Trip "${tripName}" loaded successfully!`);
-  } catch (e) {
-    alert("Error loading trip: " + e.message);
-  }
+  alert(`Trip "${tripName}" loaded successfully!`);
 }
 
 /**
- * Deletes a trip from storage
- * @param {string} tripName - Name of the trip to delete
+ * Delete a trip from storage
+ * @param {string} tripName - The name of the trip to delete
  */
 function TripStorage_deleteTrip(tripName) {
-  if (!confirm(`Are you sure you want to delete trip "${tripName}"?`)) {
+  if (!confirm(`Delete trip "${tripName}"?`)) {
     return;
   }
 
+  const trips = TripStorage_getAllTrips();
+  const filteredTrips = trips.filter((trip) => trip.name !== tripName);
+
   try {
-    const allTrips = TripStorage_getAllTrips();
-    delete allTrips[tripName];
-    localStorage.setItem("trips", JSON.stringify(allTrips));
-    alert(`Trip "${tripName}" deleted successfully!`);
-    TripStorage_showTripsListDialog();
-  } catch (e) {
-    alert("Error deleting trip: " + e.message);
+    if (filteredTrips.length === 0) {
+      localStorage.removeItem(TRIP_STORAGE_KEY);
+    } else {
+      localStorage.setItem(TRIP_STORAGE_KEY, JSON.stringify(filteredTrips));
+    }
+    alert(`Trip "${tripName}" deleted.`);
+    TripStorage_showTripsListDialog(); // Refresh the list
+  } catch (error) {
+    console.error("Error deleting trip:", error);
+    alert("Error deleting trip.");
   }
 }
 
 /**
- * Clears all trips from storage
+ * Clear all saved trips
  */
 function TripStorage_clearAllTrips() {
-  if (!confirm("Are you sure you want to delete ALL trips? This cannot be undone.")) {
+  if (!confirm("Delete ALL saved trips? This cannot be undone.")) {
     return;
   }
 
   try {
-    localStorage.removeItem("trips");
-    alert("All trips have been cleared.");
-    TripStorage_showTripsListDialog();
-  } catch (e) {
-    alert("Error clearing trips: " + e.message);
+    localStorage.removeItem(TRIP_STORAGE_KEY);
+    alert("All trips deleted.");
+    TripStorage_showTripsListDialog(); // Refresh the list
+  } catch (error) {
+    console.error("Error clearing trips:", error);
+    alert("Error clearing trips.");
   }
 }
 
 /**
- * Retrieves all trips from storage
- * @returns {object} Object containing all trips
+ * Get all saved trips from storage
+ * @returns {Array} Array of trip objects
  */
 function TripStorage_getAllTrips() {
-  if (!window.localStorage) {
-    return {};
-  }
-
   try {
-    const trips = localStorage.getItem("trips");
-    return trips ? JSON.parse(trips) : {};
-  } catch (e) {
-    console.error("Error parsing stored trips:", e);
-    return {};
+    const data = localStorage.getItem(TRIP_STORAGE_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch (error) {
+    console.error("Error retrieving trips from localStorage:", error);
+    return [];
   }
 }
 
 /**
- * Shows a dialog listing all saved trips with load/delete options
- */
-function TripStorage_showTripsListDialog() {
-  const allTrips = TripStorage_getAllTrips();
-  const tripNames = Object.keys(allTrips);
-
-  let htmlText =
-    '<div style="position:absolute; top:5px; right:5px; cursor:pointer;">';
-  htmlText +=
-    '<img src="./resources/action/close.gif" onClick="closeActionDialog();"/></div>';
-  htmlText += "<h3>Saved Trips</h3>";
-
-  if (tripNames.length === 0) {
-    htmlText += "<p>No saved trips yet.</p>";
-  } else {
-    htmlText += '<table border="1" style="width: 100%; margin-top: 10px;">';
-    htmlText +=
-      "<tr><th>Trip Name</th><th>Saved Date</th><th>Distance</th><th>Actions</th></tr>";
-
-    tripNames.forEach((tripName) => {
-      const trip = allTrips[tripName];
-      const savedDate = new Date(trip.timestamp).toLocaleString();
-      const distance = trip.distance || "N/A";
-
-      // HTML escape the trip name for safety
-      const escapedTripName = escapeHtml(tripName);
-
-      htmlText += "<tr>";
-      htmlText += `<td>${escapedTripName}</td>`;
-      htmlText += `<td>${savedDate}</td>`;
-      htmlText += `<td>${distance}</td>`;
-      htmlText += "<td>";
-      htmlText += `<button onclick="TripStorage_loadTrip('${escapedTripName}'); closeActionDialog();" style="margin-right: 5px;">Load</button>`;
-      htmlText += `<button onclick="TripStorage_deleteTrip('${escapedTripName}');" style="background-color: #ff6b6b; color: white;">Delete</button>`;
-      htmlText += "</td>";
-      htmlText += "</tr>";
-    });
-
-    htmlText += "</table>";
-  }
-
-  htmlText +=
-    '<button onclick="TripStorage_clearAllTrips();" style="margin-top: 10px; background-color: #ff6b6b; color: white;">Clear All Trips</button>';
-
-  showActionDialog(htmlText);
-}
-
-/**
- * Helper function to escape HTML characters and prevent XSS
+ * Escape HTML to prevent XSS attacks
  * @param {string} text - Text to escape
  * @returns {string} Escaped text
  */
-function escapeHtml(text) {
+function TripStorage_escapeHtml(text) {
   const map = {
     "&": "&amp;",
     "<": "&lt;",
@@ -240,4 +180,57 @@ function escapeHtml(text) {
     "'": "&#039;",
   };
   return text.replace(/[&<>"']/g, (m) => map[m]);
+}
+
+/**
+ * Format date for display
+ * @param {string} isoDateString - ISO format date string
+ * @returns {string} Formatted date string
+ */
+function TripStorage_formatDate(isoDateString) {
+  const date = new Date(isoDateString);
+  return date.toLocaleDateString() + " " + date.toLocaleTimeString();
+}
+
+/**
+ * Show dialog with list of saved trips
+ */
+function TripStorage_showTripsListDialog() {
+  const trips = TripStorage_getAllTrips();
+
+  let htmlText =
+    '<div style="position:absolute; top:5px; right:5px; cursor:pointer;">';
+  htmlText +=
+    '<img src="./resources/action/close.gif" onClick="closeActionDialog();"/></div>';
+  htmlText += "<h3>Saved Trips</h3>";
+
+  if (trips.length === 0) {
+    htmlText += "<p>No saved trips yet.</p>";
+  } else {
+    htmlText += '<table border="1" style="width:100%; margin-bottom:15px;">';
+    htmlText +=
+      "<tr><th>Trip Name</th><th>Date</th><th>Actions</th></tr>";
+
+    trips.forEach((trip) => {
+      const escapedName = TripStorage_escapeHtml(trip.name);
+      const formattedDate = TripStorage_formatDate(trip.timestamp);
+      htmlText += "<tr>";
+      htmlText += "<td>" + escapedName + "</td>";
+      htmlText += "<td>" + formattedDate + "</td>";
+      htmlText +=
+        '<td><button onclick="TripStorage_loadTrip(\'' +
+        escapedName.replace(/'/g, "\\\'")
+        + "');\">Load</button> " +
+        '<button onclick="TripStorage_deleteTrip(\'' +
+        escapedName.replace(/'/g, "\\\'")
+        + "');\">Delete</button></td>";
+      htmlText += "</tr>";
+    });
+
+    htmlText += "</table>";
+    htmlText +=
+      '<button onclick="TripStorage_clearAllTrips();" style="background-color: #ff6b6b; color: white; padding: 8px 12px; cursor: pointer;">Delete All Trips</button>';
+  }
+
+  showActionDialog(htmlText);
 }
